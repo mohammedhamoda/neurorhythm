@@ -83,7 +83,7 @@ const ROLE_SEQUENCES = {
 
 // Clinical Tempo Logic Engine (Identical to Piano)
 const calculateClientTempo = (role, loopCount) => {
-  const T = 1.0; 
+  const T = 0.5; 
 
   switch (role) {
     case 'Schizophrenia':

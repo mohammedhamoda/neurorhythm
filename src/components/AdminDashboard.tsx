@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { db } from '../firebase';
 import { collection, getDocs, orderBy, query } from 'firebase/firestore';
-import { GamepadDirectional } from 'lucide-react';
 
 // --- Types ---
 interface Session {
