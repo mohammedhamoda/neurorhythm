@@ -1,65 +1,15 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { db } from '../firebase'; 
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
 
-// ============================================================================
-// 0. DATA & CONFIG
-// ============================================================================
-
-const GENERAL_ANALYSIS_FOOTER = "Rhythmic accuracy was mapped to functional brain timing states linked to positive symptom expression";
-
-const BRAIN_ZONES = [
-  {
-    limit: 20,
-    state: "Severely Disorganized Temporal Processing",
-    features: [
-      "Major impairment in temporal prediction",
-      "High internal neural noise",
-      "Poor auditory–motor integration",
-      "Strong interference from internally generated signals"
-    ],
-    interpretation: "Brain timing systems are highly unstable, consistent with strong positive symptom interference during sensory processing."
-  },
-  {
-    limit: 40,
-    state: "Moderately Disrupted Temporal Prediction",
-    features: [
-      "Emerging but unstable timing prediction",
-      "Partial auditory–motor coupling",
-      "Frequent prediction errors"
-    ],
-    interpretation: "Temporal prediction is present but remains vulnerable to internal sensory interference."
-  },
-  {
-    limit: 60,
-    state: "Partially Stabilized Temporal Processing",
-    features: [
-      "Improved sensory–motor synchronization",
-      "Reduced internal noise",
-      "More consistent rhythm tracking"
-    ],
-    interpretation: "Brain timing networks show partial stabilization, allowing better engagement with external rhythms."
-  },
-  {
-    limit: 80,
-    state: "Stable Temporal Integration",
-    features: [
-      "Consistent auditory–motor entrainment",
-      "Low prediction error",
-      "Improved perceptual coherence"
-    ],
-    interpretation: "Temporal prediction mechanisms are stable, supporting clearer external perception."
-  },
-  {
-    limit: 100,
-    state: "Optimized Temporal Coherence",
-    features: [
-      "High temporal precision",
-      "Strong rhythm entrainment",
-      "Minimal internal sensory interference"
-    ],
-    interpretation: "Brain demonstrates optimized temporal organization with effective suppression of disruptive internal signals."
-  }
-];
+// --- NEW IMPORTS: Data is now loaded from your separate file ---
+import { 
+  BRAIN_ZONES, 
+  ROLE_GENERAL_NOTES, 
+  GENERAL_ANALYSIS_FOOTER, 
+  getBrainState 
+} from './brainZonesData';
 
 // ============================================================================
 // 1. ASSETS & SEQUENCE LOGIC
@@ -70,18 +20,63 @@ const DRUM_SOUNDS = {
   's': '/assets/drums/s.mp3'
 };
 
-const RAW_SEQUENCE = [
-  // Beats 1 - 20: xsxs | xsxs ...
-  ...Array(5).fill(['x','s','x','s']), 
-  // Beats 21 - 40: xxss | xxss ...
-  ...Array(5).fill(['x','x','s','s']),
-  // Beats 41 - 60: x_sx | x_sx ...
-  ...Array(5).fill(['x','_','s','x']),
-  // Beats 61 - 80: xssx | xssx ...
-  ...Array(5).fill(['x','s','s','x']),
-  // Beats 81 - 100: xsxs | xsxs ...
-  ...Array(5).fill(['x','s','x','s']),
-].flat();
+// --- Background Music Mapping ---
+const ROLE_BG_MUSIC = {
+  'Schizophrenia': '/assets/bg/schizophrenia.mp3',
+  'Autism Spectrum Disorder': '/assets/bg/autism.mp3',
+  'Depression': '/assets/bg/depression.mp3',
+  'ADHD': '/assets/bg/adhd.mp3',
+  'Anxiety': '/assets/bg/bgsound.mp3',
+  'default': '/assets/bg/bgsound.mp3'
+};
+
+// --- Drum Sequences extracted from Image ---
+// Mappings: Kick -> 'x', Snare -> 's', Pause -> '_'
+// "Previous of it" rule applied:
+// - Autism: Seg 2 & 3 (Accent Shift) replaced by Seg 1.
+// - Depression: Seg 2 (Ghost Snare) replaced by Seg 1.
+const ROLE_SEQUENCES = {
+  // Top Table (Assumed Schizophrenia/Default based on context)
+  // Seg 1: Kick Snare Kick Snare | Seg 2: Kick Kick Snare | Seg 3: Kick Snare Kick
+  'Schizophrenia': [
+    ...['x','s','x','s'], 
+    ...['x','x','s','_'], 
+    ...['x','s','x','_']
+  ],
+  
+  // Autism: Seg 1 (x s x s), Seg 2 (Accent Shift -> x s x s), Seg 3 (Accent Shift -> x s x s)
+  'Autism Spectrum Disorder': [
+    ...['x','s','x','s'],
+    ...['x','s','x','s'],
+    ...['x','s','x','s']
+  ],
+
+  // Depression: Seg 1 (x s), Seg 2 (Kick Ghost Snare -> Kick Snare), Seg 3 (Kick Snare)
+  // Note: Short loops based on image row
+  'Depression': [
+    ...['x','s'],
+    ...['x','s'],
+    ...['x','s']
+  ],
+
+  // ADHD: Seg 1 (x x s x), Seg 2 (s x x s), Seg 3 (x s x x)
+  'ADHD': [
+    ...['x','x','s','x'],
+    ...['s','x','x','s'],
+    ...['x','s','x','x']
+  ],
+
+  // Anxiety: Seg 1 (x s x s), Seg 2 (Pause), Seg 3 (Kick Snare - padded to 4 beats to match piano)
+  'Anxiety': [
+    ...['x','s','x','s'],
+    ...['_','_','_','_'],
+    ...['x','s','_','_']
+  ],
+
+  'default': [
+    ...['x','s','x','s'], 
+  ]
+};
 
 const DRUM_PADS = [
   { note: 'x', color: 'from-emerald-400 to-teal-500' },
@@ -100,15 +95,21 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
 
   useEffect(() => {
     let isMounted = true;
-
     const initAudio = async () => {
       try {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        audioContextRef.current = new AudioContextClass();
+        if (!audioContextRef.current) {
+             audioContextRef.current = new AudioContextClass();
+        }
+
+        if (bgAudioRef.current) {
+            bgAudioRef.current.pause();
+            bgAudioRef.current = null;
+        }
 
         const bg = new Audio(bgSoundPath);
         bg.loop = true;
-        bg.volume = 0.15; 
+        bg.volume = 0.05; 
         bgAudioRef.current = bg;
 
         const loadBuffer = async (url, key) => {
@@ -123,30 +124,32 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
           }
         };
 
-        const notePromises = Object.entries(soundPaths).map(async ([key, path]) => {
-          const buffer = await loadBuffer(path, key);
-          return { key, buffer };
-        });
+        if (Object.keys(buffersRef.current).length === 0) {
+            const notePromises = Object.entries(soundPaths).map(async ([key, path]) => {
+            const buffer = await loadBuffer(path, key);
+            return { key, buffer };
+            });
 
-        const loadedNotes = await Promise.all(notePromises);
+            const loadedNotes = await Promise.all(notePromises);
 
+            if (isMounted) {
+            loadedNotes.forEach(({ key, buffer }) => {
+                if (buffer) buffersRef.current[key] = buffer;
+            });
+            }
+        }
+        
         if (isMounted) {
-          loadedNotes.forEach(({ key, buffer }) => {
-            if (buffer) buffersRef.current[key] = buffer;
-          });
-          setIsLoaded(true);
+            setIsLoaded(true);
         }
 
       } catch (err) {
         console.error("Audio Setup Error:", err);
       }
     };
-
     initAudio();
-
     return () => {
       isMounted = false;
-      audioContextRef.current?.close();
       bgAudioRef.current?.pause();
     };
   }, [soundPaths, bgSoundPath]);
@@ -155,7 +158,11 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
     if (audioContextRef.current?.state === 'suspended') {
       await audioContextRef.current.resume();
     }
-    bgAudioRef.current?.play();
+    try {
+        await bgAudioRef.current?.play();
+    } catch (e) {
+        console.warn("Autoplay blocked:", e);
+    }
   };
 
   const playSound = (noteKey, when = 0) => {
@@ -176,22 +183,82 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
 // 3. GAME ENGINE
 // ============================================================================
 
-const useGameEngine = ({ onNoteSpawn, onCue, onGameEnd, audioEngine }) => {
+const useGameEngine = ({ onNoteSpawn, onCue, onGameEnd, audioEngine, sequence, userRole }) => {
   const [penalty, setPenalty] = useState(0); 
   const [stats, setStats] = useState({ hits: 0, misses: 0 });
   const [isPlaying, setIsPlaying] = useState(false);
+  const [tempoMultiplier, setTempoMultiplier] = useState(1.0); // Track tempo increases
 
   const nextBeatTimeRef = useRef(0);
   const gameLoopRef = useRef(null);
   const sessionStartRef = useRef(0);
   const sessionDurationRef = useRef(0);
   const sequenceIndexRef = useRef(0); 
-  
+  const loopCountRef = useRef(0); // Track number of full sequence loops
+    
   const CONSTANTS = {
-    BASE_INTERVAL: 1.0, 
-    HIT_WINDOW: 1200, // INCREASED: 1.2s window to catch "reactive" clicks
+    BASE_INTERVAL: 0.8, // Slightly faster base for engagement
+    HIT_WINDOW: 1200, 
     PENALTY_STEP: 0.1, 
     RECOVERY_STEP: 0.01
+  };
+
+  // Helper to update tempo based on Role Rules
+  const updateTempoLogic = (currentLoops) => {
+    let multiplier = 1.0;
+    
+    // Logic extracted from image text
+    switch(userRole) {
+      case 'Schizophrenia': 
+        // "after every 3 loop repetitions: T x 1.10"
+        if (currentLoops > 0 && currentLoops % 3 === 0) {
+            // Apply compounding 1.10 every 3 loops
+            // E.g. Loops 3->1.1, Loops 6->1.21
+            const steps = Math.floor(currentLoops / 3);
+            multiplier = Math.pow(1.10, steps);
+        }
+        break;
+
+      case 'Autism Spectrum Disorder':
+        // "every 2 repetitions: T x 1.12"
+        if (currentLoops > 0 && currentLoops % 2 === 0) {
+            const steps = Math.floor(currentLoops / 2);
+            multiplier = Math.pow(1.12, steps);
+        }
+        break;
+
+      case 'Depression':
+        // "after first repetition: T x 1.18 (then after two loop increase it with the same rate)"
+        if (currentLoops >= 1) {
+            // Loop 1: 1 step. Loop 3: 2 steps. Loop 5: 3 steps.
+            // Formula: 1 initial step + floor((loops - 1) / 2) steps
+            const extraSteps = Math.floor((currentLoops - 1) / 2);
+            multiplier = Math.pow(1.18, 1 + extraSteps);
+        }
+        break;
+
+      case 'ADHD':
+        // "every repetition: T x 1.2"
+        // (assuming "then after two loop..." means it keeps increasing or follows a pattern, 
+        // strictly "every repetition" implies exponential growth every loop)
+        if (currentLoops > 0) {
+            multiplier = Math.pow(1.2, currentLoops);
+        }
+        break;
+
+      case 'Anxiety':
+        // Default linear progression for Anxiety if not specified
+        if (currentLoops > 0) {
+            multiplier = 1 + (currentLoops * 0.05); 
+        }
+        break;
+        
+      default:
+        multiplier = 1.0;
+    }
+    
+    // Cap max speed to prevent crashing/unplayable state
+    return Math.min(multiplier, 3.0);
   };
 
   const gameLoop = useCallback(() => {
@@ -201,38 +268,42 @@ const useGameEngine = ({ onNoteSpawn, onCue, onGameEnd, audioEngine }) => {
 
     if (elapsedMs >= durationMs) {
       stopGame();
-      onGameEnd();
+      onGameEnd(); 
       return;
     }
 
-    // --- TIME BASED SPEED INCREASE ---
-    const progress = elapsedMs / durationMs;
-    let timeTierBonus = 0;
-    if (progress > 0.66) timeTierBonus = 0.4;
-    else if (progress > 0.33) timeTierBonus = 0.2;
-
-    // --- SPEED CALCULATION ---
-    let currentSpeed = 1.0 + timeTierBonus - penalty;
+    // Base Speed calculation
+    // Speed = (1.0 - penalty) * RoleTempoMultiplier
+    let currentSpeed = (1.0 - penalty) * tempoMultiplier;
     if (currentSpeed < 0.5) currentSpeed = 0.5;
 
-    // --- BEAT & CUE LOGIC ---
     if (currentTime >= nextBeatTimeRef.current) {
       const interval = CONSTANTS.BASE_INTERVAL / currentSpeed;
       
-      const noteToPlay = RAW_SEQUENCE[sequenceIndexRef.current];
+      const noteToPlay = sequence[sequenceIndexRef.current];
       
       if (noteToPlay !== '_') {
         audioEngine.playSound(noteToPlay, nextBeatTimeRef.current);
         onNoteSpawn(noteToPlay);
-        if (onCue) onCue(noteToPlay); // Visual triggers EXACTLY with sound
+        if (onCue) onCue(noteToPlay);
       }
 
-      sequenceIndexRef.current = (sequenceIndexRef.current + 1) % RAW_SEQUENCE.length;
+      // Advance Sequence
+      const nextIndex = (sequenceIndexRef.current + 1) % sequence.length;
+      
+      // Check for Loop Completion
+      if (nextIndex === 0) {
+          loopCountRef.current += 1;
+          const newMultiplier = updateTempoLogic(loopCountRef.current);
+          setTempoMultiplier(newMultiplier);
+      }
+
+      sequenceIndexRef.current = nextIndex;
       nextBeatTimeRef.current += interval;
     }
 
     gameLoopRef.current = requestAnimationFrame(gameLoop);
-  }, [audioEngine, penalty, onNoteSpawn, onCue, onGameEnd]);
+  }, [audioEngine, penalty, onNoteSpawn, onCue, onGameEnd, sequence, tempoMultiplier, userRole]);
 
   const startGame = useCallback(
     async durationMinutes => {
@@ -240,7 +311,9 @@ const useGameEngine = ({ onNoteSpawn, onCue, onGameEnd, audioEngine }) => {
       
       setStats({ hits: 0, misses: 0 });
       setPenalty(0);
+      setTempoMultiplier(1.0);
       sequenceIndexRef.current = 0;
+      loopCountRef.current = 0;
       
       sessionStartRef.current = performance.now();
       sessionDurationRef.current = durationMinutes;
@@ -271,7 +344,7 @@ const useGameEngine = ({ onNoteSpawn, onCue, onGameEnd, audioEngine }) => {
 
   const validateHit = useCallback(timeDiff => timeDiff <= CONSTANTS.HIT_WINDOW, []);
 
-  const displaySpeed = Math.max(0.5, 1.0 + (isPlaying ? (stats.hits+stats.misses > 10 ? 0.2 : 0) : 0) - penalty);
+  const displaySpeed = Math.max(0.5, (1.0 * tempoMultiplier) - penalty);
 
   return { stats, isPlaying, startGame, stopGame, handleHit, handleMiss, validateHit, constants: CONSTANTS, displaySpeed };
 };
@@ -283,33 +356,21 @@ const useGameEngine = ({ onNoteSpawn, onCue, onGameEnd, audioEngine }) => {
 const DrumPad = ({ note, isActive, isCued, onClick, color }) => {
   return (
     <div className="relative flex flex-col items-center">
-      {/* Visual Cue Arrow */}
       <div 
         className={`absolute -top-20 transition-all duration-300 ${
           isCued 
-            ? 'opacity-100 translate-y-0 scale-110' // Active: Visible and pop
+            ? 'opacity-100 translate-y-0 scale-110' 
             : 'opacity-0 translate-y-4 scale-90'
         }`}
       >
         <div className="animate-bounce">
-           <svg 
-             width="40" 
-             height="40" 
-             viewBox="0 0 24 24" 
-             fill="none" 
-             stroke="currentColor" 
-             strokeWidth="3" 
-             strokeLinecap="round" 
-             strokeLinejoin="round" 
-             className="text-slate-900"
-           >
+           <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-slate-900">
              <line x1="12" y1="5" x2="12" y2="19"></line>
              <polyline points="19 12 12 19 5 12"></polyline>
            </svg>
         </div>
       </div>
 
-      {/* The Drum */}
       <button
         onClick={() => onClick(note)}
         className={`
@@ -355,7 +416,7 @@ const WaveLine = ({ hits, misses }) => {
       animState.current.phase += speed;
       const width = 100; 
       const midY = 50; 
-      
+        
       pathRefs.forEach((ref, lineIndex) => {
         if (!ref.current) return;
         const points = [];
@@ -388,65 +449,103 @@ const WaveLine = ({ hits, misses }) => {
 // 5. MAIN COMPONENT
 // ============================================================================
 
-const RhythmGame = ({ onBack }) => {
+const RhythmGame = ({ onBack, user, userRole }) => {
   const [gameState, setGameState] = useState('start');
   const [sessionDuration, setSessionDuration] = useState(10);
   
+  const sessionStartTimeRef = useRef(null);
+
   const [showMindAnalysis, setShowMindAnalysis] = useState(false);
   const [activeNotes, setActiveNotes] = useState([]);
   const [cuedNote, setCuedNote] = useState(null);
   const [triggerFlash, setTriggerFlash] = useState(false);
   
   const noteIdRef = useRef(0);
-  // Store timeouts here to prevent React render cycles from resetting/clearing them prematurely
   const missTimersRef = useRef({}); 
 
-  const audioEngine = useAudioEngine(DRUM_SOUNDS, '/assets/bgsound.mp3');
+  const activeBgMusic = useMemo(() => {
+     return ROLE_BG_MUSIC[userRole] || ROLE_BG_MUSIC['default'];
+  }, [userRole]);
+
+  const audioEngine = useAudioEngine(DRUM_SOUNDS, activeBgMusic);
+
+  const activeSequence = useMemo(() => {
+     return ROLE_SEQUENCES[userRole] || ROLE_SEQUENCES['default'];
+  }, [userRole]);
 
   const spawnNote = useCallback((note) => {
     const id = noteIdRef.current++;
     
-    // Add to active notes
     setActiveNotes(prev => [
       ...prev,
       { id, note, spawnTime: performance.now() }
     ]);
 
-    // Set a strict timer for this specific note to trigger a miss if not hit
-    // This timer persists regardless of other notes spawning
     missTimersRef.current[id] = setTimeout(() => {
-      // If this runs, it means the user missed the window
       setActiveNotes(prev => {
         const stillActive = prev.find(n => n.id === id);
         if (stillActive) {
-          setCuedNote(null); // Clear the arrow
-          // Trigger the Miss Logic via a callback pattern or directly here if we had access
-          // Since we can't easily access gameEngine from here without circular deps or complex refs,
-          // we use a specific approach:
+          setCuedNote(null);
           return prev.filter(n => n.id !== id);
         }
         return prev;
       });
-      // We need to signal a miss. A simple way is a state flag or ref, 
-      // but to keep it clean, we'll let the GameEngine know via a checked effect below 
-      // OR we just assume the removal in the loop constitutes a miss in the UI logic.
-      // However, to update stats, we need to call gameEngine.handleMiss().
-    }, 1200); // Must match HIT_WINDOW
-
+    }, 1200); 
   }, []);
 
   const handleCue = useCallback((note) => {
     setCuedNote(note);
   }, []);
 
+  // --------------------------------------------------------------------------
+  // SAVE LOGIC
+  // --------------------------------------------------------------------------
+  const saveSessionToFirebase = useCallback(async (currentHits, currentMisses) => {
+    if (!user || !sessionStartTimeRef.current) return;
+
+    try {
+      const endTime = Date.now();
+      const timeSpentMs = endTime - sessionStartTimeRef.current;
+      const timeSpentSeconds = Math.floor(timeSpentMs / 1000);
+
+      const total = currentHits + currentMisses;
+      const accuracy = total > 0 ? Math.round((currentHits / total) * 100) : 0;
+      
+      await addDoc(collection(db, "sessions"), {
+        userId: user.uid,
+        userName: user.displayName || "Anonymous",
+        game: "Drums",
+        hits: currentHits,
+        misses: currentMisses,
+        accuracy: accuracy,
+        intendedDurationMinutes: sessionDuration, 
+        timeSpentSeconds: timeSpentSeconds,      
+        timestamp: serverTimestamp()
+      });
+      console.log("Session saved to Firebase! Time spent:", timeSpentSeconds, "seconds");
+    } catch (e) {
+      console.error("Error saving session: ", e);
+    }
+  }, [user, sessionDuration]);
+
+  // --------------------------------------------------------------------------
+  // HANDLERS
+  // --------------------------------------------------------------------------
+
+  const handleNaturalEnd = () => {
+      saveSessionToFirebase(gameEngine.stats.hits, gameEngine.stats.misses);
+      setGameState('end');
+  };
+
   const gameEngine = useGameEngine({
     onNoteSpawn: spawnNote,
     onCue: handleCue,
-    onGameEnd: () => setGameState('end'),
-    audioEngine
+    onGameEnd: handleNaturalEnd, 
+    audioEngine,
+    sequence: activeSequence,
+    userRole: userRole 
   });
 
-  // CLEANUP TIMERS ON UNMOUNT OR GAME END
   useEffect(() => {
     return () => {
       Object.values(missTimersRef.current).forEach(clearTimeout);
@@ -454,64 +553,19 @@ const RhythmGame = ({ onBack }) => {
     };
   }, [gameState]);
 
-  // MISS CHECKER - Separate logic to sync stats
-  // We use a separate mechanism to detect when a note expires naturally
-  useEffect(() => {
-    if (gameState !== 'playing') return;
-
-    // This interval checks if any notes were removed by the setTimeout above
-    // Actually, simpler: when the setTimeout fires, we can't easily call gameEngine.handleMiss
-    // because gameEngine is re-created every render.
-    // FIX: We attach the handleMiss to the timer by using a Ref that always points to current handleMiss
-  }, [gameState]);
-
-  // Ref pattern to allow timeouts to call the latest handleMiss function
   const handleMissRef = useRef(gameEngine.handleMiss);
   useEffect(() => { handleMissRef.current = gameEngine.handleMiss; }, [gameEngine.handleMiss]);
 
-  // REDEFINING SPAWN to use the Ref
-  const spawnNoteWithTimer = useCallback((note) => {
-    const id = noteIdRef.current++;
-    setActiveNotes(prev => [...prev, { id, note, spawnTime: performance.now() }]);
-
-    missTimersRef.current[id] = setTimeout(() => {
-      setActiveNotes(prev => {
-        if (prev.find(n => n.id === id)) {
-           handleMissRef.current(); // Call the latest miss handler
-           setCuedNote(null);
-           return prev.filter(n => n.id !== id);
-        }
-        return prev;
-      });
-    }, gameEngine.constants.HIT_WINDOW);
-  }, [gameEngine.constants.HIT_WINDOW]);
-
-  // Pass the robust spawner to the engine
-  // Note: We need to override the engine's internal onNoteSpawn call or pass this one in.
-  // Since useGameEngine takes onNoteSpawn as a prop, we need to make sure we pass the one above.
-  // BUT gameEngine is defined *after* spawnNote.
-  // We need to decouple.
-  
-  // FINAL ARCHITECTURE FIX:
-  // 1. Define gameEngine using a proxy spawn function.
-  // 2. The proxy calls the real logic.
-  
-  // Actually, simpler: The `useGameEngine` is the driver. We just need to ensure `spawnNote` (defined before gameEngine)
-  // has access to `handleMiss`. It doesn't initially.
-  // So we use the `handleMissRef` which we update in a useEffect.
 
   const handlePadClick = (note) => {
     if (gameState !== 'playing') return;
-
     const targetNote = activeNotes.find(n => n.note === note);
 
     if (targetNote) {
-      // Clear the miss timer for this note immediately!
       if (missTimersRef.current[targetNote.id]) {
         clearTimeout(missTimersRef.current[targetNote.id]);
         delete missTimersRef.current[targetNote.id];
       }
-
       const diff = Math.abs(performance.now() - targetNote.spawnTime);
       setActiveNotes(prev => prev.filter(n => n.id !== targetNote.id));
 
@@ -529,13 +583,21 @@ const RhythmGame = ({ onBack }) => {
     }
   };
 
-  const handleManualEnd = () => {
+  const handleManualEnd = async () => {
     gameEngine.stopGame();
+    await saveSessionToFirebase(gameEngine.stats.hits, gameEngine.stats.misses);
     setGameState('end');
+  };
+
+  const handleMainMenu = async () => {
+    gameEngine.stopGame();
+    await saveSessionToFirebase(gameEngine.stats.hits, gameEngine.stats.misses);
+    onBack();
   };
 
   const handleStartClick = async () => {
     setShowMindAnalysis(false);
+    sessionStartTimeRef.current = Date.now();
     setGameState('playing'); 
     gameEngine.startGame(sessionDuration);
   };
@@ -544,7 +606,9 @@ const RhythmGame = ({ onBack }) => {
     return <div className="min-h-screen flex items-center justify-center font-sans text-gray-500">Loading Drum Sounds...</div>;
   }
 
-  // --- SETTINGS / START SCREEN ---
+  const glassBtnClass = "backdrop-blur-md bg-white/30 border border-white/50 shadow-[0_8px_32px_0_rgba(31,38,135,0.15)] text-emerald-900 transition-all hover:bg-white/50 active:scale-95";
+
+  // Settings
   if (gameState === 'start') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-100 via-teal-50 to-cyan-100 font-sans p-6">
@@ -578,22 +642,29 @@ const RhythmGame = ({ onBack }) => {
           >
             Start Session
           </button>
+          
+          <button 
+            onClick={onBack}
+            className="mt-4 w-full py-3 rounded-2xl bg-white/30 hover:bg-white/50 text-slate-600 font-medium transition-all"
+          >
+            Back to Menu
+          </button>
         </div>
       </div>
     );
   }
 
-  // --- GAME END / STATS SCREEN ---
   if (gameState === 'end') {
     const total = gameEngine.stats.hits + gameEngine.stats.misses;
     const accuracy = total > 0 ? Math.round((gameEngine.stats.hits / total) * 100) : 0;
-    const brainData = BRAIN_ZONES.find(z => accuracy <= z.limit) || BRAIN_ZONES[BRAIN_ZONES.length - 1];
+    
+    const brainData = getBrainState(userRole, accuracy);
+    const generalRoleNote = ROLE_GENERAL_NOTES[userRole] || ROLE_GENERAL_NOTES['default'] || "Analysis unavailable for this role.";
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 font-sans p-4">
         
         {!showMindAnalysis ? (
-          // STATS CARD
           <div className="bg-white/90 p-10 rounded-3xl shadow-2xl w-full max-w-md text-center border border-white">
             <h1 className="text-3xl font-bold text-emerald-900 mb-6">Session Complete</h1>
             <div className="space-y-4 mb-8">
@@ -615,21 +686,23 @@ const RhythmGame = ({ onBack }) => {
               <button onClick={() => setShowMindAnalysis(true)} className="w-full py-4 rounded-2xl bg-white text-emerald-600 font-semibold border-2 border-emerald-100 hover:bg-emerald-50 transition">
                 Show Mind State
               </button>
+              <button onClick={onBack} className="w-full py-4 rounded-2xl bg-slate-100 text-slate-600 font-semibold hover:bg-slate-200 transition">
+                 Main Menu
+              </button>
             </div>
           </div>
         ) : (
-          // MIND ANALYSIS CARD
           <div className="bg-white/90 p-8 rounded-3xl shadow-2xl w-full max-w-lg text-left border border-white animate-fade-in-up">
             <div className="flex justify-between items-center mb-6">
                <h2 className="text-xl font-bold text-emerald-900 uppercase tracking-widest opacity-60">Brain Analysis</h2>
                <div className="bg-emerald-100 text-emerald-700 font-bold px-3 py-1 rounded-full text-sm">{accuracy}% Accuracy</div>
             </div>
 
-            <h1 className="text-2xl font-bold text-slate-800 mb-4 leading-tight">{brainData.state}</h1>
+            <h1 className="text-2xl font-bold text-slate-800 mb-4 leading-tight">{brainData ? brainData.state : "Analysis Inconclusive"}</h1>
 
             <div className="bg-emerald-50/50 rounded-xl p-5 mb-5 border border-emerald-100/50">
               <ul className="space-y-2 mb-4">
-                {brainData.features.map((feature, i) => (
+                {brainData && brainData.features.map((feature, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
                     <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
                     {feature}
@@ -638,8 +711,17 @@ const RhythmGame = ({ onBack }) => {
               </ul>
               <div className="mt-4 pt-4 border-t border-emerald-200/50">
                 <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1 block">Interpretation</span>
-                <p className="text-sm text-slate-600 italic">"{brainData.interpretation}"</p>
+                <p className="text-sm text-slate-600 italic">"{brainData ? brainData.interpretation : "No data available."}"</p>
               </div>
+            </div>
+
+            <div className="mb-6 p-4 bg-slate-50 rounded-xl border border-slate-100">
+               <span className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 block">
+                 Clinical Context
+               </span>
+               <p className="text-sm text-slate-600 font-medium leading-relaxed">
+                 {generalRoleNote}
+               </p>
             </div>
 
             <p className="text-xs text-center text-gray-400 italic mb-6 px-4">{GENERAL_ANALYSIS_FOOTER}</p>
@@ -653,34 +735,41 @@ const RhythmGame = ({ onBack }) => {
     );
   }
 
-  // --- GAMEPLAY SCREEN ---
+  // Gameplay screen
   return (
     <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 font-sans flex flex-col">
       <WaveLine hits={gameEngine.stats.hits} misses={gameEngine.stats.misses} />
       
-      {/* Background Counter */}
+      {/* Background */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
         <span className="text-[12rem] font-black text-emerald-900 opacity-5 select-none transition-all duration-300">
           {gameEngine.stats.hits}
         </span>
       </div>
 
-      {/* Screen Flash on Hit */}
+      {/* Hit Effect */}
       <div className={`absolute inset-0 pointer-events-none bg-emerald-400 z-0 transition-opacity duration-150 ease-out ${triggerFlash ? 'opacity-20' : 'opacity-0'}`} />
 
       {/* Top Controls */}
       <div className="relative z-50 p-6 flex justify-between items-start">
-        <button onClick={handleManualEnd} className="p-3 rounded-2xl bg-white/40 hover:bg-white/80 backdrop-blur-sm text-emerald-900 transition-all shadow-sm border border-white/50 active:scale-95">
+        <button 
+          onClick={handleManualEnd} 
+          className={`p-3 rounded-2xl ${glassBtnClass}`}
+          aria-label="End Session"
+        >
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
         </button>
-        <button onClick={() => { gameEngine.stopGame(); onBack(); }} className="px-4 py-2 rounded-2xl bg-white/40 hover:bg-white/80 backdrop-blur-sm text-emerald-900 font-semibold transition-all shadow-sm border border-white/50 active:scale-95">Main Menu</button>
+        
+        <button 
+          onClick={handleMainMenu} 
+          className={`px-6 py-2 rounded-2xl font-semibold ${glassBtnClass}`}
+        >
+          Main Menu
+        </button>
       </div>
 
-      {/* DRUM PADS CONTAINER */}
+      {/* Drum Container */}
       <div className="mt-auto w-full px-2 pb-12 md:pb-20 relative z-10 flex flex-col items-center">
-        
-
-
         <div className="flex gap-10 md:gap-20 justify-center items-center">
           {DRUM_PADS.map((pad) => (
             <DrumPad 

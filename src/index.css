@@ -1,2 +1,21 @@
 @import "tailwindcss";
 @import "konsta/react/theme.css";
+
+/* --- Native App Overrides --- */
+
+:root {
+  /* 1. Disables double-tap to zoom (Crucial for iOS) */
+  touch-action: pan-x pan-y;
+}
+
+body {
+  /* 2. Disables text selection (So you can't accidentally highlight text) */
+  -webkit-user-select: none;
+  user-select: none;
+
+  /* 3. Removes the blue "flash" when you tap a button on mobile */
+  -webkit-tap-highlight-color: transparent;
+  
+  /* 4. Disables pull-to-refresh on mobile */
+  overscroll-behavior-y: none;
+}

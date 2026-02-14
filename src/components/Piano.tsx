@@ -1,86 +1,111 @@
 // @ts-nocheck
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { db } from '../firebase'; 
+import { collection, addDoc, serverTimestamp } from 'firebase/firestore';
+
+// --- SHARED DATA ---
+import { 
+  BRAIN_ZONES, 
+  ROLE_GENERAL_NOTES, 
+  GENERAL_ANALYSIS_FOOTER, 
+  getBrainState 
+} from './brainZonesData';
 
 // ============================================================================
-// 0. DATA & CONFIG (New Section for Brain States)
-// ============================================================================
-
-const GENERAL_ANALYSIS_FOOTER = "Rhythmic accuracy was mapped to functional brain timing states linked to positive symptom expression";
-
-const BRAIN_ZONES = [
-  {
-    limit: 20,
-    state: "Severely Disorganized Temporal Processing",
-    features: [
-      "Major impairment in temporal prediction",
-      "High internal neural noise",
-      "Poor auditory–motor integration",
-      "Strong interference from internally generated signals"
-    ],
-    interpretation: "Brain timing systems are highly unstable, consistent with strong positive symptom interference during sensory processing."
-  },
-  {
-    limit: 40,
-    state: "Moderately Disrupted Temporal Prediction",
-    features: [
-      "Emerging but unstable timing prediction",
-      "Partial auditory–motor coupling",
-      "Frequent prediction errors"
-    ],
-    interpretation: "Temporal prediction is present but remains vulnerable to internal sensory interference."
-  },
-  {
-    limit: 60,
-    state: "Partially Stabilized Temporal Processing",
-    features: [
-      "Improved sensory–motor synchronization",
-      "Reduced internal noise",
-      "More consistent rhythm tracking"
-    ],
-    interpretation: "Brain timing networks show partial stabilization, allowing better engagement with external rhythms."
-  },
-  {
-    limit: 80,
-    state: "Stable Temporal Integration",
-    features: [
-      "Consistent auditory–motor entrainment",
-      "Low prediction error",
-      "Improved perceptual coherence"
-    ],
-    interpretation: "Temporal prediction mechanisms are stable, supporting clearer external perception."
-  },
-  {
-    limit: 100,
-    state: "Optimized Temporal Coherence",
-    features: [
-      "High temporal precision",
-      "Strong rhythm entrainment",
-      "Minimal internal sensory interference"
-    ],
-    interpretation: "Brain demonstrates optimized temporal organization with effective suppression of disruptive internal signals."
-  }
-];
-
-// ============================================================================
-// 1. ASSETS & CONFIG
+// 1. ASSETS & CLIENT DATA MAPPING
 // ============================================================================
 
 const PIANO_SOUNDS = {
-  'C4': '/assets/piano/C4.mp3',
-  'G4': '/assets/piano/G4.mp3',
-  'A4': '/assets/piano/A4.mp3',
-  'F4': '/assets/piano/F4.mp3'
+  'G3': '/assets/piano/G3.mp3', 'A3': '/assets/piano/A3.mp3', 'B3': '/assets/piano/B3.mp3',
+  'C4': '/assets/piano/C4.mp3', 'D4': '/assets/piano/D4.mp3', 'E4': '/assets/piano/E4.mp3',
+  'F4': '/assets/piano/F4.mp3', 'G4': '/assets/piano/G4.mp3', 'A4': '/assets/piano/A4.mp3',
+  'B4': '/assets/piano/B4.mp3', 'C5': '/assets/piano/C5.mp3', 'D5': '/assets/piano/D5.mp3',
+  'E5': '/assets/piano/E5.mp3'
 };
 
-const PIANO_KEYS = ['C4', 'G4', 'A4', 'F4'];
-
-const EXERCISE_SEQUENCE = [
-  { note: 'C4', repeats: 20 },
-  { note: 'G4', repeats: 20 },
-  { note: 'A4', repeats: 20 },
-  { note: 'F4', repeats: 20 },
-  { note: 'C4', repeats: 20 }
+// --- FIX #2: EXPANDED KEYS ---
+// Added B3, B4, D5, E5 so they have visuals when the song plays them
+const PIANO_KEYS = [
+  'G3', 'A3', 'B3', 
+  'C4', 'D4', 'E4', 'F4', 'G4', 'A4', 'B4', 
+  'C5', 'D5', 'E5'
 ];
+
+// --- NEW: Background Music Mapping ---
+const ROLE_BG_MUSIC = {
+  'Schizophrenia': '/assets/bg/schizophrenia.mp3',
+  'Autism Spectrum Disorder': '/assets/bg/autism.mp3',
+  'Depression': '/assets/bg/depression.mp3',
+  'ADHD': '/assets/bg/adhd.mp3',
+  'Anxiety': '/assets/bg/bgsound.mp3',
+  // Fallback
+  'default': '/assets/bg/bgsound.mp3'
+};
+
+// Mapped from Client Documentation Tables
+const ROLE_SEQUENCES = {
+  'Schizophrenia': [
+    ['C4', 'G4', 'A4', 'C5'], 
+    ['D4', 'A4', 'B4', 'D5'], 
+    ['E4', 'B4', 'C5', 'E5'] 
+  ],
+  'Autism Spectrum Disorder': [
+    ['C4', 'E4', 'G4', 'C5'],
+    ['D4', 'F4', 'A4', 'D5'],
+    ['E4', 'G4', 'B4', 'E5']
+  ],
+  'Depression': [
+    ['A3', 'C4', 'E4'],
+    ['G3', 'B3', 'D4'],
+    ['A3', 'D4', 'F4']
+  ],
+  'ADHD': [
+    ['C4', 'E4', 'G4', 'E4'],
+    ['F4', 'A4', 'C5', 'A4'],
+    ['D4', 'F4', 'A4', 'F4']
+  ],
+  'Anxiety': [
+    ['E4', 'G4', 'A4', 'G4'],
+    ['D4', 'F4', 'G4', 'F4'],
+    ['E4', 'G4', 'B4', 'G4']
+  ],
+  // Fallback
+  'default': [
+    ['C4', 'G4', 'A4', 'F4'],
+    ['C4', 'G4', 'A4', 'F4']
+  ]
+};
+
+// Clinical Tempo Logic Engine
+const calculateClientTempo = (role, loopCount) => {
+  const T = 1.0; 
+
+  switch (role) {
+    case 'Schizophrenia':
+      return T * Math.pow(1.10, Math.floor(loopCount / 3));
+
+    case 'Autism Spectrum Disorder':
+      return T * Math.pow(1.12, Math.floor(loopCount / 2));
+
+    case 'Depression':
+      if (loopCount === 0) return T;
+      return T * Math.pow(1.18, 1 + Math.floor((loopCount - 1) / 2));
+
+    case 'ADHD':
+      if (loopCount <= 2) {
+        return T * Math.pow(1.2, loopCount);
+      } else {
+        return T * Math.pow(1.2, 2 + Math.floor((loopCount - 2) / 2));
+      }
+
+    case 'Anxiety':
+      const cyclePos = Math.floor(loopCount / 2) % 2; 
+      return cyclePos === 1 ? T * 1.17 : T;
+
+    default:
+      return T;
+  }
+};
 
 // ============================================================================
 // 2. AUDIO ENGINE
@@ -94,19 +119,24 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
 
   useEffect(() => {
     let isMounted = true;
+    setIsLoaded(false); 
 
     const initAudio = async () => {
       try {
         const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-        audioContextRef.current = new AudioContextClass();
+        if (!audioContextRef.current) {
+          audioContextRef.current = new AudioContextClass();
+        }
 
-        // --- BACKGROUND MUSIC SETUP ---
+        if (bgAudioRef.current) {
+          bgAudioRef.current.pause();
+          bgAudioRef.current = null;
+        }
         const bg = new Audio(bgSoundPath);
         bg.loop = true;
-        bg.volume = 0.2; 
+        bg.volume = 0.05; 
         bgAudioRef.current = bg;
 
-        // --- PIANO SAMPLES LOADING ---
         const loadBuffer = async (url, key) => {
           try {
             const response = await fetch(url);
@@ -119,17 +149,22 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
           }
         };
 
-        const notePromises = Object.entries(soundPaths).map(async ([key, path]) => {
-          const buffer = await loadBuffer(path, key);
-          return { key, buffer };
-        });
+        if (Object.keys(buffersRef.current).length === 0) {
+            const notePromises = Object.entries(soundPaths).map(async ([key, path]) => {
+            const buffer = await loadBuffer(path, key);
+            return { key, buffer };
+            });
 
-        const loadedNotes = await Promise.all(notePromises);
+            const loadedNotes = await Promise.all(notePromises);
+            
+            if (isMounted) {
+                loadedNotes.forEach(({ key, buffer }) => {
+                    if (buffer) buffersRef.current[key] = buffer;
+                });
+            }
+        }
 
         if (isMounted) {
-          loadedNotes.forEach(({ key, buffer }) => {
-            if (buffer) buffersRef.current[key] = buffer;
-          });
           setIsLoaded(true);
         }
 
@@ -142,7 +177,6 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
 
     return () => {
       isMounted = false;
-      audioContextRef.current?.close();
       bgAudioRef.current?.pause();
     };
   }, [soundPaths, bgSoundPath]);
@@ -151,7 +185,11 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
     if (audioContextRef.current?.state === 'suspended') {
       await audioContextRef.current.resume();
     }
-    bgAudioRef.current?.play();
+    try {
+        await bgAudioRef.current?.play();
+    } catch (e) {
+        console.warn("Autoplay blocked or failed:", e);
+    }
   };
 
   const playTone = (noteKey, when = 0) => {
@@ -162,7 +200,7 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
     
     const gainNode = audioContextRef.current.createGain();
     gainNode.gain.setValueAtTime(1.0, when);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, when + 2.5);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, when + 2.0); 
 
     source.connect(gainNode);
     gainNode.connect(audioContextRef.current.destination);
@@ -180,7 +218,7 @@ const useAudioEngine = (soundPaths, bgSoundPath) => {
 // 3. GAME ENGINE
 // ============================================================================
 
-const useGameEngine = ({ onNoteSpawn, onGameEnd, audioEngine }) => {
+const useGameEngine = ({ onNoteSpawn, onGameEnd, audioEngine, sequence, userRole }) => {
   const [accuracyMultiplier, setAccuracyMultiplier] = useState(1); 
   const [stats, setStats] = useState({ hits: 0, misses: 0 });
   const [isPlaying, setIsPlaying] = useState(false);
@@ -191,12 +229,15 @@ const useGameEngine = ({ onNoteSpawn, onGameEnd, audioEngine }) => {
   const sessionDurationRef = useRef(0);
   
   const consecutiveMissesRef = useRef(0);
-  const sequenceIndexRef = useRef(0); 
-  const repeatCounterRef = useRef(0); 
+  const loopIterationRef = useRef(0); 
+  const segmentIndexRef = useRef(0); 
+  const noteIndexRef = useRef(0); 
 
   const CONSTANTS = {
     BASE_INTERVAL_SECONDS: 1.0,
-    HIT_WINDOW: 800,
+    // --- FIX #1: INCREASED TIME WINDOW ---
+    // Increased from 800 to 1500 to give user more time to click
+    HIT_WINDOW: 1500, 
     MIN_ACCURACY_MULT: 0.5, 
     MISSES_TO_SLOW_DOWN: 2,
     SLOW_DOWN_FACTOR: 0.9,
@@ -214,38 +255,38 @@ const useGameEngine = ({ onNoteSpawn, onGameEnd, audioEngine }) => {
       return;
     }
 
-    const progress = elapsedMs / durationMs;
-    let timeSpeedBonus = 0; 
-    
-    if (progress > 0.66) {
-      timeSpeedBonus = 0.4;
-    } else if (progress > 0.33) {
-      timeSpeedBonus = 0.2;
-    }
-
-    const baseSpeed = 1.0 + timeSpeedBonus;
-    const finalSpeed = baseSpeed * accuracyMultiplier;
+    const clinicalTempoMult = calculateClientTempo(userRole, loopIterationRef.current);
+    const finalSpeed = clinicalTempoMult * accuracyMultiplier;
 
     if (currentTime >= nextBeatTimeRef.current) {
       const interval = CONSTANTS.BASE_INTERVAL_SECONDS / finalSpeed;
       
-      const currentStep = EXERCISE_SEQUENCE[sequenceIndexRef.current];
-      const noteToPlay = currentStep.note;
-      
-      audioEngine.playTone(noteToPlay, nextBeatTimeRef.current);
-      onNoteSpawn(noteToPlay);
+      const currentSegment = sequence[segmentIndexRef.current];
 
-      repeatCounterRef.current++;
-      if (repeatCounterRef.current >= currentStep.repeats) {
-        repeatCounterRef.current = 0;
-        sequenceIndexRef.current = (sequenceIndexRef.current + 1) % EXERCISE_SEQUENCE.length;
+      if (currentSegment && currentSegment.length > 0) {
+          const noteToPlay = currentSegment[noteIndexRef.current];
+          
+          audioEngine.playTone(noteToPlay, nextBeatTimeRef.current);
+          onNoteSpawn(noteToPlay);
+
+          noteIndexRef.current++;
+          
+          if (noteIndexRef.current >= currentSegment.length) {
+              noteIndexRef.current = 0;
+              segmentIndexRef.current++;
+              
+              if (segmentIndexRef.current >= sequence.length) {
+                  segmentIndexRef.current = 0;
+                  loopIterationRef.current++; 
+              }
+          }
       }
 
       nextBeatTimeRef.current += interval;
     }
 
     gameLoopRef.current = requestAnimationFrame(gameLoop);
-  }, [audioEngine, accuracyMultiplier, onNoteSpawn, onGameEnd]);
+  }, [audioEngine, accuracyMultiplier, onNoteSpawn, onGameEnd, sequence, userRole]);
 
   const startGame = useCallback(
     async durationMinutes => {
@@ -255,8 +296,10 @@ const useGameEngine = ({ onNoteSpawn, onGameEnd, audioEngine }) => {
       setAccuracyMultiplier(1);
       
       consecutiveMissesRef.current = 0;
-      sequenceIndexRef.current = 0;
-      repeatCounterRef.current = 0;
+      
+      loopIterationRef.current = 0;
+      segmentIndexRef.current = 0;
+      noteIndexRef.current = 0;
       
       sessionStartRef.current = performance.now();
       sessionDurationRef.current = durationMinutes;
@@ -293,7 +336,7 @@ const useGameEngine = ({ onNoteSpawn, onGameEnd, audioEngine }) => {
 
   const validateHit = useCallback(timeDiff => timeDiff <= CONSTANTS.HIT_WINDOW, []);
 
-  const displaySpeed = (1.0 + (isPlaying ? 0 : 0)) * accuracyMultiplier; 
+  const displaySpeed = (1.0) * accuracyMultiplier; 
 
   return { stats, speedMultiplier: displaySpeed, isPlaying, startGame, stopGame, handleHit, handleMiss, validateHit, constants: CONSTANTS };
 };
@@ -315,7 +358,7 @@ const PianoKey = ({ note, isActive, onClick }) => {
         }
       `}
     >
-      <span className={`font-bold text-sm ${isActive ? 'text-white' : 'text-gray-300'}`}>
+      <span className={`font-bold text-xs md:text-sm ${isActive ? 'text-white' : 'text-gray-300'}`}>
         {note}
       </span>
       <div className={`absolute inset-0 rounded-b-lg bg-gradient-to-t from-emerald-200/40 to-transparent pointer-events-none transition-opacity duration-200 ${isActive ? 'opacity-100' : 'opacity-0'}`} />
@@ -384,23 +427,32 @@ const WaveLine = ({ hits, misses }) => {
 // 5. MAIN COMPONENT
 // ============================================================================
 
-const RhythmGame = ({ onBack }) => {
+const RhythmGame = ({ onBack, user, userRole }) => {
   const [gameState, setGameState] = useState('start');
   const [sessionDuration, setSessionDuration] = useState(10);
   
-  // New state for toggling the Mind/Brain view
+  const sessionStartTimeRef = useRef(null);
   const [showMindAnalysis, setShowMindAnalysis] = useState(false);
-
   const [activeNotes, setActiveNotes] = useState([]);
   const [triggerFlash, setTriggerFlash] = useState(false);
   const noteIdRef = useRef(0);
 
-  const audioEngine = useAudioEngine(PIANO_SOUNDS, '/assets/bgsound.mp3');
+  const activeBgMusic = useMemo(() => {
+     return ROLE_BG_MUSIC[userRole] || ROLE_BG_MUSIC['default'];
+  }, [userRole]);
 
+  const audioEngine = useAudioEngine(PIANO_SOUNDS, activeBgMusic);
+
+  const activeSequence = useMemo(() => {
+     return ROLE_SEQUENCES[userRole] || ROLE_SEQUENCES['default'];
+  }, [userRole]);
+
+  // --- FIX #3: ONE KEY AT A TIME ---
   const spawnNote = useCallback((note) => {
     const id = noteIdRef.current++;
-    setActiveNotes(prev => [
-      ...prev,
+    // Replaced the '...' spread operator with a new array containing ONLY the new note.
+    // This ensures that when a new note spawns, the old one is removed immediately.
+    setActiveNotes([
       {
         id,
         note,
@@ -409,10 +461,51 @@ const RhythmGame = ({ onBack }) => {
     ]);
   }, []);
 
+  // --------------------------------------------------------------------------
+  // SAVE LOGIC
+  // --------------------------------------------------------------------------
+  const saveSessionToFirebase = useCallback(async (currentHits, currentMisses) => {
+    if (!user || !sessionStartTimeRef.current) return;
+
+    try {
+      const endTime = Date.now();
+      const timeSpentMs = endTime - sessionStartTimeRef.current;
+      const timeSpentSeconds = Math.floor(timeSpentMs / 1000);
+      const total = currentHits + currentMisses;
+      const accuracy = total > 0 ? Math.round((currentHits / total) * 100) : 0;
+      
+      await addDoc(collection(db, "sessions"), {
+        userId: user.uid,
+        userName: user.displayName || "Anonymous",
+        game: "Piano",
+        hits: currentHits,
+        misses: currentMisses,
+        accuracy: accuracy,
+        intendedDurationMinutes: sessionDuration,
+        timeSpentSeconds: timeSpentSeconds,
+        timestamp: serverTimestamp()
+      });
+      console.log("Session saved.");
+    } catch (e) {
+      console.error("Error saving session: ", e);
+    }
+  }, [user, sessionDuration]);
+
+  // --------------------------------------------------------------------------
+  // HANDLERS
+  // --------------------------------------------------------------------------
+
+  const handleNaturalEnd = () => {
+      saveSessionToFirebase(gameEngine.stats.hits, gameEngine.stats.misses);
+      setGameState('end');
+  };
+
   const gameEngine = useGameEngine({
     onNoteSpawn: spawnNote,
-    onGameEnd: () => setGameState('end'),
-    audioEngine
+    onGameEnd: handleNaturalEnd,
+    audioEngine,
+    sequence: activeSequence,
+    userRole 
   });
 
   useEffect(() => {
@@ -454,23 +547,32 @@ const RhythmGame = ({ onBack }) => {
     }
   };
 
-  const handleManualEnd = () => {
+  const handleManualEnd = async () => {
     gameEngine.stopGame();
+    await saveSessionToFirebase(gameEngine.stats.hits, gameEngine.stats.misses);
     setGameState('end');
   };
 
+  const handleMainMenu = async () => {
+    gameEngine.stopGame();
+    await saveSessionToFirebase(gameEngine.stats.hits, gameEngine.stats.misses);
+    onBack();
+  };
+
   const handleStartClick = async () => {
-    // Reset mind view when starting new game
     setShowMindAnalysis(false);
+    sessionStartTimeRef.current = Date.now();
     setGameState('playing'); 
     gameEngine.startGame(sessionDuration);
   };
 
   if (!audioEngine.isLoaded) {
-    return <div className="min-h-screen flex items-center justify-center font-sans text-gray-500">Loading Piano Sounds...</div>;
+    return <div className="min-h-screen flex items-center justify-center font-sans text-gray-500">Loading Clinical Assets...</div>;
   }
 
-  // --- SETTINGS / START SCREEN ---
+  const glassBtnClass = "backdrop-blur-md bg-white/30 border border-white/50 shadow-[0_8px_32px_0_rgba(31,38,135,0.15)] text-emerald-900 transition-all hover:bg-white/50 active:scale-95";
+
+  // SETTINGS SCREEN
   if (gameState === 'start') {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-100 via-teal-50 to-cyan-100 font-sans p-6">
@@ -504,25 +606,29 @@ const RhythmGame = ({ onBack }) => {
           >
             Start Session
           </button>
+          
+          <button 
+            onClick={onBack}
+            className="mt-4 w-full py-3 rounded-2xl bg-white/30 hover:bg-white/50 text-slate-600 font-medium transition-all"
+          >
+            Back to Menu
+          </button>
         </div>
       </div>
     );
   }
 
-  // --- GAME END / STATS SCREEN ---
+  // END SCREEN
   if (gameState === 'end') {
     const total = gameEngine.stats.hits + gameEngine.stats.misses;
     const accuracy = total > 0 ? Math.round((gameEngine.stats.hits / total) * 100) : 0;
     
-    // Find the correct Brain State based on accuracy
-    const brainData = BRAIN_ZONES.find(z => accuracy <= z.limit) || BRAIN_ZONES[BRAIN_ZONES.length - 1];
+    const brainData = getBrainState(userRole, accuracy);
+    const generalRoleNote = ROLE_GENERAL_NOTES[userRole] || ROLE_GENERAL_NOTES['default'] || "Analysis unavailable for this role.";
 
     return (
       <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 font-sans p-4">
-        
-        {/* Toggle between Simple Stats and Mind Analysis */}
         {!showMindAnalysis ? (
-          // === STANDARD STATISTICS CARD ===
           <div className="bg-white/90 p-10 rounded-3xl shadow-2xl w-full max-w-md text-center border border-white">
             <h1 className="text-3xl font-bold text-emerald-900 mb-6">Session Complete</h1>
             <div className="space-y-4 mb-8">
@@ -536,107 +642,67 @@ const RhythmGame = ({ onBack }) => {
                 <span>Accuracy:</span> <span className="font-bold text-emerald-600">{accuracy}%</span>
               </div>
             </div>
-            
             <div className="space-y-3">
-              <button 
-                onClick={() => setGameState('start')} 
-                className="w-full py-4 rounded-2xl bg-emerald-500 text-white font-semibold hover:bg-emerald-600 transition shadow-md"
-              >
-                Try Again
-              </button>
-              
-              {/* --- NEW BUTTON: SHOW MIND --- */}
-              <button 
-                onClick={() => setShowMindAnalysis(true)} 
-                className="w-full py-4 rounded-2xl bg-white text-emerald-600 font-semibold border-2 border-emerald-100 hover:bg-emerald-50 transition"
-              >
-                Show Mind State
-              </button>
+              <button onClick={() => setGameState('start')} className="w-full py-4 rounded-2xl bg-emerald-500 text-white font-semibold hover:bg-emerald-600 transition shadow-md">Try Again</button>
+              <button onClick={() => setShowMindAnalysis(true)} className="w-full py-4 rounded-2xl bg-white text-emerald-600 font-semibold border-2 border-emerald-100 hover:bg-emerald-50 transition">Show Mind State</button>
+              <button onClick={onBack} className="w-full py-4 rounded-2xl bg-slate-100 text-slate-600 font-semibold hover:bg-slate-200 transition">Main Menu</button>
             </div>
           </div>
         ) : (
-          // === MIND ANALYSIS CARD ===
           <div className="bg-white/90 p-8 rounded-3xl shadow-2xl w-full max-w-lg text-left border border-white animate-fade-in-up">
             <div className="flex justify-between items-center mb-6">
                <h2 className="text-xl font-bold text-emerald-900 uppercase tracking-widest opacity-60">Brain Analysis</h2>
                <div className="bg-emerald-100 text-emerald-700 font-bold px-3 py-1 rounded-full text-sm">{accuracy}% Accuracy</div>
             </div>
-
-            <h1 className="text-2xl font-bold text-slate-800 mb-4 leading-tight">
-              {brainData.state}
-            </h1>
-
+            <h1 className="text-2xl font-bold text-slate-800 mb-4 leading-tight">{brainData ? brainData.state : "Analysis Inconclusive"}</h1>
             <div className="bg-emerald-50/50 rounded-xl p-5 mb-5 border border-emerald-100/50">
               <ul className="space-y-2 mb-4">
-                {brainData.features.map((feature, i) => (
+                {brainData && brainData.features.map((feature, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
-                    <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>
-                    {feature}
+                    <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0"></span>{feature}
                   </li>
                 ))}
               </ul>
-              
               <div className="mt-4 pt-4 border-t border-emerald-200/50">
                 <span className="text-xs font-bold text-emerald-600 uppercase tracking-wider mb-1 block">Interpretation</span>
-                <p className="text-sm text-slate-600 italic">
-                  "{brainData.interpretation}"
-                </p>
+                <p className="text-sm text-slate-600 italic">"{brainData ? brainData.interpretation : "No data available."}"</p>
               </div>
             </div>
-
-            <p className="text-xs text-center text-gray-400 italic mb-6 px-4">
-              {GENERAL_ANALYSIS_FOOTER}
-            </p>
-
-            <button 
-              onClick={() => setShowMindAnalysis(false)} 
-              className="w-full py-4 rounded-2xl bg-emerald-500 text-white font-semibold hover:bg-emerald-600 transition shadow-md"
-            >
-              Back to Statistics
-            </button>
+            <div className="mb-6 p-4 bg-slate-50 rounded-xl border border-slate-100">
+               <span className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2 block">Clinical Context</span>
+               <p className="text-sm text-slate-600 font-medium leading-relaxed">{generalRoleNote}</p>
+            </div>
+            <p className="text-xs text-center text-gray-400 italic mb-6 px-4">{GENERAL_ANALYSIS_FOOTER}</p>
+            <button onClick={() => setShowMindAnalysis(false)} className="w-full py-4 rounded-2xl bg-emerald-500 text-white font-semibold hover:bg-emerald-600 transition shadow-md">Back to Statistics</button>
           </div>
         )}
       </div>
     );
   }
 
-  // --- GAMEPLAY SCREEN ---
+  // GAME SCREEN
   return (
     <div className="min-h-screen relative overflow-hidden bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50 font-sans flex flex-col">
       <WaveLine hits={gameEngine.stats.hits} misses={gameEngine.stats.misses} />
       
-      {/* Background Counter */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
         <span className="text-[12rem] font-black text-emerald-900 opacity-5 select-none transition-all duration-300">
           {gameEngine.stats.hits}
         </span>
       </div>
 
-      {/* Screen Flash on Hit */}
       <div className={`absolute inset-0 pointer-events-none bg-emerald-400 z-0 transition-opacity duration-200 ease-out ${triggerFlash ? 'opacity-20' : 'opacity-0'}`} />
 
-      {/* Top Controls */}
       <div className="relative z-50 p-6 flex justify-between items-start">
-        <button onClick={handleManualEnd} className="p-3 rounded-2xl bg-white/40 hover:bg-white/80 backdrop-blur-sm text-emerald-900 transition-all shadow-sm border border-white/50 active:scale-95">
+        <button onClick={handleManualEnd} className={`p-3 rounded-2xl ${glassBtnClass}`} aria-label="End Session">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>
         </button>
-        <button onClick={() => { gameEngine.stopGame(); onBack(); }} className="px-4 py-2 rounded-2xl bg-white/40 hover:bg-white/80 backdrop-blur-sm text-emerald-900 font-semibold transition-all shadow-sm border border-white/50 active:scale-95">Main Menu</button>
+        <button onClick={handleMainMenu} className={`px-6 py-2 rounded-2xl font-semibold ${glassBtnClass}`}>Main Menu</button>
       </div>
 
-      {/* Piano Container - SIMPLE & LOVELY STYLE */}
       <div className="mt-auto w-full px-2 md:px-10 pb-6 md:pb-10 relative z-10">
-        <div className="
-          relative overflow-hidden
-          bg-gradient-to-b from-white/60 to-white/20
-          backdrop-blur-xl
-          p-4 md:p-6
-          rounded-t-[3rem]
-          border border-white/50
-          shadow-[0_-8px_30px_rgba(255,255,255,0.4)]
-        ">
-           {/* Soft Highlight */}
+        <div className="relative overflow-hidden bg-gradient-to-b from-white/60 to-white/20 backdrop-blur-xl p-4 md:p-6 rounded-t-[3rem] border border-white/50 shadow-[0_-8px_30px_rgba(255,255,255,0.4)]">
           <div className="pointer-events-none absolute top-0 inset-x-20 h-[1px] bg-gradient-to-r from-transparent via-white/80 to-transparent z-20"></div>
-          
           <div className="flex gap-1 md:gap-2 relative z-10">
             {PIANO_KEYS.map((note, index) => (
               <PianoKey 
