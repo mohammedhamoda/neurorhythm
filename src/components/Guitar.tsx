@@ -670,7 +670,6 @@ const RhythmGame = ({ onBack, user, userRole }) => {
             </div>
             <div className="space-y-3">
               <button onClick={() => setGameState('start')} className="w-full py-4 rounded-2xl bg-emerald-500 text-white font-semibold hover:bg-emerald-600 transition shadow-md">Try Again</button>
-              <button onClick={() => setShowMindAnalysis(true)} className="w-full py-4 rounded-2xl bg-white text-emerald-600 font-semibold border-2 border-emerald-100 hover:bg-emerald-50 transition">Show Mind State</button>
               <button onClick={onBack} className="w-full py-4 rounded-2xl bg-slate-100 text-slate-600 font-semibold hover:bg-slate-200 transition">Main Menu</button>
             </div>
           </div>
